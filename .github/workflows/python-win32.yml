@@ -1,0 +1,35 @@
+name: Python win32 wheel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: "x86"
+      - name: Install Rust target
+        run: rustup target add i686-pc-windows-msvc
+      - name: Build and install x86 wheel
+        run: python build_win32.py --install
+      - name: Run x86 native buffer tests
+        shell: pwsh
+        run: |
+          $env:PYO3_PYTHON = (Get-Command python).Source
+          cargo test --locked -p windows-capture-python --target i686-pc-windows-msvc --lib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-capture-2.0.1-win32
+          path: dist/win32/*.whl
+          if-no-files-found: error

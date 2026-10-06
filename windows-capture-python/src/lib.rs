@@ -419,8 +419,17 @@ pub enum NativeMappedFrameError {
     Map(#[source] windows::core::Error),
     #[error("The mapped staging texture returned a null data pointer")]
     NullDataPointer,
-    #[error("The mapped frame size overflowed usize")]
+    #[error("The mapped frame exceeds the addressable Rust/Python buffer size")]
     SizeOverflow,
+}
+
+// Both Rust slices and Python buffers are limited to isize::MAX bytes, even
+// though their backing allocation/pointer can be represented by usize.
+fn checked_frame_len(row_pitch: usize, height: usize) -> Result<usize, NativeMappedFrameError> {
+    row_pitch
+        .checked_mul(height)
+        .filter(|&len| len <= isize::MAX as usize)
+        .ok_or(NativeMappedFrameError::SizeOverflow)
 }
 
 /// Owns a mapped D3D staging texture for as long as Python retains its buffer view.
@@ -478,12 +487,34 @@ impl NativeMappedFrame {
             return Err(NativeMappedFrameError::NullDataPointer);
         }
 
-        frame.len = frame
-            .row_pitch
-            .checked_mul(usize::try_from(height).map_err(|_| NativeMappedFrameError::SizeOverflow)?)
-            .ok_or(NativeMappedFrameError::SizeOverflow)?;
+        frame.len = checked_frame_len(
+            frame.row_pitch,
+            usize::try_from(height).map_err(|_| NativeMappedFrameError::SizeOverflow)?,
+        )?;
 
         Ok(frame)
+    }
+}
+
+#[cfg(test)]
+mod win32_buffer_tests {
+    use super::checked_frame_len;
+
+    #[test]
+    fn permits_padded_frame_rows() {
+        assert_eq!(checked_frame_len(8192, 1080).unwrap(), 8_847_360);
+    }
+
+    #[test]
+    fn rejects_buffers_exceeding_signed_pointer_size() {
+        assert!(checked_frame_len(isize::MAX as usize + 1, 1).is_err());
+        assert!(checked_frame_len(usize::MAX, 2).is_err());
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn rejects_two_gib_frame_on_x86() {
+        assert!(checked_frame_len(131_072, 16_384).is_err());
     }
 }
 
